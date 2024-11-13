@@ -17,6 +17,8 @@ import (
 
 var tasksFile ="tasks.csv"
 
+
+
 type Task struct {
 	ID int
 	Task string
@@ -26,7 +28,23 @@ type Task struct {
 
 func main() {
 
-	var rootCmd = &cobra.Command{Use: "tasks"}
+	var rootCmd = &cobra.Command{Use: "tasks", Short: `
+=========================================
+        TASKS CLI - A Simple To-Do List
+=========================================
+
+1. [ ] Buy groceries
+2. [ ] Finish report
+3. [ ] Call John
+
+Commands:
+- Add a task: tasks add "Task description"
+- Mark complete: tasks complete <task_number>
+- Delete a task: tasks delete <task_number>
+- View all tasks: tasks list
+
+=========================================
+`}
 
 	rootCmd.AddCommand(addCmd, listCmd, completeCmd, deleteCmd, getCmd)
 
