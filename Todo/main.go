@@ -8,11 +8,15 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"sync"
 	"time"
+
+	"github.com/gofrs/flock"
+	"github.com/mergestat/timediff"
+	"github.com/spf13/cobra"
 )
 
-var mutex sync.Mutex
+var tasksFile ="tasks.csv"
+
 type Task struct {
 	ID int
 	Task string
@@ -21,77 +25,231 @@ type Task struct {
 }
 
 func main() {
-	fmt.Println("Starting Todo List Application")
-	err := initCSV("tasks.csv")
-	if err != nil {
-		fmt.Println("Error initializing CSV file:", err)
-	}
-	addTask("tasks.csv", "First Task")
-	addTask("tasks.csv", "Second Task")
-	addTask("tasks.csv", "Third Task")
-	addTask("tasks.csv", "Fourth Task")
-	listTasks("tasks.csv")
-	updateTask("tasks.csv", "3", "true")
-	listTasks("tasks.csv")
-	// deleteTask("tasks.csv", "2")
-	listTasks("tasks.csv")
+
+	var rootCmd = &cobra.Command{Use: "tasks"}
+
+	rootCmd.AddCommand(addCmd, listCmd, completeCmd, deleteCmd, getCmd)
+
+	rootCmd.Execute()
 }
 
 
-func initCSV(filename string) error {
-	mutex.Lock()
-	defer mutex.Unlock()
-	if _, err := os.Stat(filename); os.IsNotExist(err) {
-		file, err := os.Create(filename)
+var addCmd = &cobra.Command{
+	Use: "add",
+	Short: "Add a new task to the list",
+	Run: func(cmd *cobra.Command, args []string) {
+		if len(args) == 0 {
+			fmt.Println("Please provide a task to add")
+			return
+		}
+		addTask(args[0])
+	},
+}
+
+var listCmd = &cobra.Command{
+	Use: "list",
+	Short: "List all tasks",
+	Run: func(cmd *cobra.Command, args []string) {
+		listTasks()
+	},
+}
+var completeCmd = &cobra.Command{
+	Use: "complete",
+	Short: "Complete a task",
+	Run: func(cmd *cobra.Command, args []string) {
+		if len(args) == 0 {
+			fmt.Println("Please provide a task ID to complete")
+			return
+		}
+		taskID, err := strconv.Atoi(args[0])
 		if err != nil {
-			return fmt.Errorf("failed to create file: %w", err)
-		} 
-		defer file.Close()
+			fmt.Println("Invalid task ID")
+			return
+		}
+		completeTask(taskID)
+	},
+}
+
+var deleteCmd = &cobra.Command{
+	Use: "delete",
+	Short: "Delete a task",
+	Run: func(cmd *cobra.Command, args []string) {
+		if len(args) == 0 {
+			fmt.Println("Please provide a task ID to delete")
+			return
+		}
+		taskID, err := strconv.Atoi(args[0])
+		if err != nil {
+			fmt.Println("Invalid task ID")
+			return
+		}
+		deleteTask(taskID)
+	},
+}
+var getCmd = &cobra.Command{
+	Use: "get",
+	Short: "Get a task",
+	Run: func(cmd *cobra.Command, args []string) {
+		if len(args) == 0 {
+			fmt.Println("Please provide a task ID to get")
+			return
+		}
+		taskID, err := strconv.Atoi(args[0])
+		if err != nil {
+			fmt.Println("Invalid task ID")
+			return
+		}
+		getTask(taskID)
+	},
+}
+
+func addTask(task string)  {
+	file, err := loadFile(tasksFile)
+	if err != nil {
+		fmt.Printf("failed to load file: %v\n", err)
+		return
+	}
+
+	defer closeFile(file)
+
+	tasks, err := readTasks(file)
+	if err != nil {
+		fmt.Printf("failed to read tasks: %v\n", err)
+		return
+	}
 
 	
-	writer := csv.NewWriter(file)
-		defer writer.Flush()
-
-		record := []string{
-			"ID",
-			"Task",
-			"Completed",
-			"CreatedAt",
-	}
-	if err := writer.Write(record); err != nil {
-			return fmt.Errorf("failed to write task: %w", err)
-		}
-		fmt.Println("CSV file created successfully")
-	}
-	return nil
+	newTask := Task{ID: len(tasks) + 1, Task: task, Completed: false, CreatedAt: time.Now().UTC()}
+	tasks = append(tasks, newTask)
+	 writeTasks(file, tasks)
+	 fmt.Println("Task added successfully")
 }
-func openCSVFile(filename string, flag int) (*os.File, error) {
-	file, err := os.OpenFile(filename, flag, 0644)
+
+func listTasks() {
+	file, err := loadFile(tasksFile)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open file: %w", err)
+		fmt.Printf("failed to load file: %v\n", err)
+		return
 	}
-	return file, nil
+
+	defer closeFile(file)
+
+	tasks, err := readTasks(file)
+	if err != nil {
+		fmt.Printf("failed to read tasks: %v\n", err)
+		return
+	}
+
+	fmt.Println("ID. Task Status Created At")
+	for _, task := range tasks {
+		fmt.Printf("%d. %s %v %s\n", task.ID, task.Task, task.Completed, timediff.TimeDiff(task.CreatedAt))
+	}
 }
 
-func writeCSVFile(file *os.File, task Task) error {
-	mutex.Lock()
-	defer mutex.Unlock()
-	writer := csv.NewWriter(file)
-	defer writer.Flush()
+func completeTask(taskID int) {
+	file, err := loadFile(tasksFile)
+	if err != nil {
+		fmt.Printf("failed to load file: %v\n", err)
+		return
+	}
 
-	record := []string{
-		strconv.Itoa(task.ID),
-		task.Task,
-		strconv.FormatBool(task.Completed),
-		task.CreatedAt.Format(time.RFC3339),
+	defer closeFile(file)
+
+	tasks, err := readTasks(file)
+	if err != nil {
+		fmt.Printf("failed to read tasks: %v\n", err)
+		return
 	}
-	if err := writer.Write(record); err != nil {
-		return fmt.Errorf("failed to write task: %w", err)
+
+	for i, task := range tasks {
+		if task.ID == taskID {
+			tasks[i].Completed = true
+			break
+		}
 	}
-	return nil
+
+	writeTasks(file, tasks)
+	fmt.Println("Task completed successfully")
 }
 
-func readCSVFile(file *os.File) ([]Task, error) {
+func deleteTask(taskID int) {
+	file, err := loadFile(tasksFile)
+	if err != nil {
+		fmt.Printf("failed to load file: %v\n", err)
+		return
+	}
+
+	defer closeFile(file)
+
+	tasks, err := readTasks(file)
+	if err != nil {
+		fmt.Printf("failed to read tasks: %v\n", err)
+		return
+	}
+
+	var updatedTasks []Task
+
+	for _, task := range tasks {
+		if task.ID != taskID {
+			updatedTasks = append(updatedTasks, task)
+		}
+	}
+
+	writeTasks(file, updatedTasks)
+	fmt.Println("Task deleted successfully")
+}
+
+func getTask(taskID int)  {
+	file, err := loadFile(tasksFile)
+	if err != nil {
+		fmt.Printf("failed to load file: %v\n", err)
+		return
+	}
+
+	defer closeFile(file)
+
+	tasks, err := readTasks(file)
+	if err != nil {
+		fmt.Printf("failed to read tasks: %v\n", err)
+		return
+	}
+
+	for _, task := range tasks {
+		if task.ID == taskID {
+			fmt.Println("ID. Task Status Created At")
+			fmt.Printf("%d. %s %v %s\n", task.ID, task.Task, task.Completed, timediff.TimeDiff(task.CreatedAt))
+		}
+	}
+}
+
+func loadFile(filepath string) (*os.File, error) {
+	f, err := os.OpenFile(filepath, os.O_RDWR|os.O_CREATE, os.ModePerm)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open file for reading")
+	}
+
+	fileLock := flock.New(filepath + ".lock")
+
+	locked, err := fileLock.TryLock()
+	if err != nil {
+		return nil, fmt.Errorf("failed to lock file: %w", err)
+	}
+
+	if !locked {
+		return nil, fmt.Errorf("failed to lock file")
+	}
+
+
+	return f, nil
+}
+
+func closeFile(f *os.File) error {
+	fileLock := flock.New(f.Name() + ".lock")
+	return fileLock.Unlock()
+}
+
+func readTasks(file *os.File) ([]Task, error) {
+	file.Seek(0,0)
 	reader := csv.NewReader(file)
 	records, err := reader.ReadAll()
 	if err != nil {
@@ -99,226 +257,28 @@ func readCSVFile(file *os.File) ([]Task, error) {
 	}
 
 	var tasks []Task
-	for i, record := range records {
-		if i == 0 { // Skip header
-			continue
-		}
+
+	for _, record := range records {
 		id, _ := strconv.Atoi(record[0])
-		completed, _ := strconv.ParseBool(record[2])
-		createdAt, _ := time.Parse(time.RFC3339, record[3])
-		
-		tasks = append(tasks, Task{
-			ID:        id,
-			Task:      record[1],
-			Completed: completed,
-			CreatedAt: createdAt,
-		})
+		isCompleted, _ := strconv.ParseBool(record[3])
+		createdAt, _ := time.Parse(time.RFC3339, record[2])
+		tasks = append(tasks, Task{ID: id, Task: record[1], Completed: isCompleted, CreatedAt: createdAt})
 	}
+
 	return tasks, nil
 }
 
-func getNextID(tasks []Task) int {
-	maxID := 0
-	for _, task := range tasks {
-		if task.ID > maxID {
-			maxID = task.ID
-		}
-	}
-	return maxID + 1
-}
-
-func addTask(filename string, taskDescription string) error {
-	// First read existing tasks to get the next ID
-	file, err := openCSVFile(filename, os.O_RDONLY)
-	if err != nil {
-		return err
-	}
-	records, err := readCSVFile(file)
-	file.Close()
-	if err != nil {
-		return fmt.Errorf("failed to read tasks: %w", err)
-	}
-
-	// Get next ID and create new task
-	nextID := getNextID(records)
-	newTask := Task{
-		ID: nextID,
-		Task: taskDescription,
-		Completed: false,
-		CreatedAt: time.Now(),
-	}
-
-	// Append the new task
-	file, err = openCSVFile(filename, os.O_APPEND|os.O_WRONLY)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	err = writeCSVFile(file, newTask)
-	if err != nil {
-		return fmt.Errorf("failed to write task: %w", err)
-	}
-	fmt.Printf("Task added successfully with ID: %d\n", nextID)
-	return nil
-}
-
-func listTasks(filename string) error {
-	file, err := openCSVFile(filename, os.O_RDONLY)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	records, err := readCSVFile(file)
-	if err != nil {
-		return fmt.Errorf("failed to read tasks: %w", err)
-	}
-
-	for _, record := range records {
-		fmt.Println(record)
-	}
-	return nil
-}
-
-func getTaskByID(filename string, taskID string) (Task, error) {
-	file, err := openCSVFile(filename, os.O_RDONLY)
-	if err != nil {
-		return Task{}, err
-	}
-	defer file.Close()
-
-	records, err := readCSVFile(file)
-	if err != nil {
-		return Task{}, fmt.Errorf("failed to read tasks: %w", err)
-	}
-
-	var task Task
-	for _, record := range records {
-		if strconv.Itoa(record.ID) == taskID {
-			task = record
-			break
-		}
-	}
-
-	if task.ID == 0 {
-		return Task{}, fmt.Errorf("task with ID %s not found", taskID)
-	}
-
-	return task, nil
-}
-
- // Start of Selection
-func deleteTask(filename string, taskID string) error {
-	 
-
-	// First, read all records with read-only access
-	readFile, err := openCSVFile(filename, os.O_RDONLY)
-	if err != nil {
-		return err
-	}
-	records, err := readCSVFile(readFile)
-	readFile.Close() // Close immediately after reading
-	if err != nil {
-		return fmt.Errorf("failed to read tasks: %w", err)
-	}
-
-	// Filter out the task to be deleted
-	var remainingRecords []Task
-	for _, record := range records {
-		if strconv.Itoa(record.ID) != taskID {
-			remainingRecords = append(remainingRecords, record)
-		}
-	}
-
-	// Truncate and write to the file
-	writeFile, err := os.Create(filename) // This truncates the file
-	if err != nil {
-		return fmt.Errorf("failed to open file for writing: %w", err)
-	}
-	defer writeFile.Close()
-
-	writer := csv.NewWriter(writeFile)
-	defer writer.Flush()
-
-	
-
-	// Write all remaining records
-	for _, record := range remainingRecords {
-		if err := writeCSVFile(writeFile, record); err != nil {
-			return fmt.Errorf("failed to write task: %w", err)
-		}
-	}
-
-	fmt.Println("Task deleted successfully")
-	return nil
-}
-
-func updateTask(filename string, taskID string, completed string) error {
-	// Get existing task first
-	task, err := getTaskByID(filename, taskID)
-	if err != nil {
-		return err
-	}
-
-	// Create updated task
-	completedBool, err := strconv.ParseBool(completed)
-	if err != nil {
-		return fmt.Errorf("failed to parse completed value: %w", err)
-	}
-	updatedTask := Task{task.ID, task.Task, completedBool, time.Now()}
-
-	// Read all tasks
-	file, err := openCSVFile(filename, os.O_RDONLY)
-	if err != nil {
-		return err
-	}
-	tasks, err := readCSVFile(file)
-	file.Close()
-	if err != nil {
-		return fmt.Errorf("failed to read tasks: %w", err)
-	}
-
-	// Create new file
-	file, err = os.Create(filename)
-	if err != nil {
-		return fmt.Errorf("failed to create file: %w", err)
-	}
-	defer file.Close()
+func writeTasks(file *os.File, tasks []Task) error {
+	file.Truncate(0)
+	file.Seek(0,0)
 
 	writer := csv.NewWriter(file)
-	defer writer.Flush()
 
-	// Write header at the top
-	if err := writer.Write([]string{"ID", "Task", "Completed", "CreatedAt"}); err != nil {
-		return fmt.Errorf("failed to write header: %w", err)
+	for _, task := range tasks {
+		record := []string{strconv.Itoa(task.ID), task.Task, task.CreatedAt.Format(time.RFC3339), strconv.FormatBool(task.Completed)}
+		writer.Write(record)
 	}
 
-	// Write all tasks, replacing the updated one
-	for _, t := range tasks {
-		if t.ID == task.ID {
-			record := []string{
-				strconv.Itoa(updatedTask.ID),
-				updatedTask.Task,
-				strconv.FormatBool(updatedTask.Completed),
-				updatedTask.CreatedAt.Format(time.RFC3339),
-			}
-			if err := writer.Write(record); err != nil {
-				return fmt.Errorf("failed to write task: %w", err)
-			}
-		} else {
-			record := []string{
-				strconv.Itoa(t.ID),
-				t.Task,
-				strconv.FormatBool(t.Completed),
-				t.CreatedAt.Format(time.RFC3339),
-			}
-			if err := writer.Write(record); err != nil {
-				return fmt.Errorf("failed to write task: %w", err)
-			}
-		}
-	}
-
-	fmt.Println("Task updated successfully")
+	writer.Flush()
 	return nil
 }
